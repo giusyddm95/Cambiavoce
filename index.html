@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Cambiavoce">
+<meta name="theme-color" content="#2f5bea">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0;font:14px system-ui}[hidden]{display:none!important}</style></head><body>
+<title>Cambiavoce</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500&family=IBM+Plex+Mono:wght@500&display=swap">
+<style>
+/* Layout: una colonna stretta da telefono; pulsante microfono grande in alto, preset in griglia, regolazioni fini sotto */
+:root {
+  --bg: #eef1f6;
+  --panel: #ffffff;
+  --fg: #16202e;
+  --muted: #5d6879;
+  --line: #d3d9e3;
+  --accent: #2f5bea;
+  --accent-ink: #ffffff;
+  --live: #e0313f;
+  --warn-bg: #fff4d6;
+  --warn-fg: #6b4a00;
+  --display: "Bricolage Grotesque", "Avenir Next", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141c; --panel: #18202c; --fg: #e8edf5; --muted: #95a1b3; --line: #2a3546;
+    --accent: #7d9bff; --accent-ink: #0b1020; --live: #ff5a66; --warn-bg: #3a2f12; --warn-fg: #f3d58a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141c; --panel: #18202c; --fg: #e8edf5; --muted: #95a1b3; --line: #2a3546;
+  --accent: #7d9bff; --accent-ink: #0b1020; --live: #ff5a66; --warn-bg: #3a2f12; --warn-fg: #f3d58a;
+  color-scheme: dark;
+}
+body { background: var(--bg); color: var(--fg); font-family: var(--body); font-size: 15px; line-height: 1.45; }
+.wrap { max-width: 480px; margin: 0 auto; padding-inline: 16px; padding-block: 20px 40px; display: flex; flex-direction: column; gap: 18px; }
+h1 { font-family: var(--display); font-weight: 800; font-size: 30px; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--muted); margin: 2px 0 0; }
+.note { background: var(--warn-bg); color: var(--warn-fg); border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+.note[hidden] { display: none; }
+.stage { display: flex; align-items: center; gap: 18px; }
+#mic { width: 104px; height: 104px; flex: none; border-radius: 50%; border: 0; background: var(--accent); color: var(--accent-ink); font-family: var(--display); font-weight: 600; font-size: 16px; cursor: pointer; box-shadow: 0 0 0 0 var(--live); transition: background .15s; }
+#mic.on { background: var(--live); animation: pulse 1.6s infinite; }
+#mic:focus-visible, button:focus-visible, input:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--live) 50%, transparent); } 100% { box-shadow: 0 0 0 22px transparent; } }
+@media (prefers-reduced-motion: reduce) { #mic.on { animation: none; } }
+.status { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+#state { font-weight: 500; }
+.meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+#level { height: 100%; width: 0; background: var(--accent); transition: width .06s linear; }
+.lat { font-family: var(--mono); font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+h2 { font-family: var(--display); font-weight: 600; font-size: 17px; margin: 0 0 8px; }
+.groups h3 { font-size: 12px; font-weight: 500; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 14px 0 6px; }
+.groups h3:first-child { margin-top: 0; }
+.presets { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.preset { text-align: left; border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 12px; padding: 10px 12px; cursor: pointer; font: inherit; }
+.preset b { display: block; font-weight: 500; }
+.preset span { color: var(--muted); font-size: 13px; }
+.preset[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.ctrl { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; align-items: center; }
+.ctrl label { font-weight: 500; }
+.ctrl output { font-family: var(--mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ctrl input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.fine { display: flex; flex-direction: column; gap: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn { border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 10px; padding: 9px 14px; font: inherit; font-weight: 500; cursor: pointer; }
+.btn:disabled { opacity: .45; cursor: default; }
+audio { width: 100%; }
+.small { font-size: 13px; color: var(--muted); }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Cambiavoce</h1>
+    <p class="sub">Parla nel microfono e senti la tua voce trasformata mentre parli.</p>
+  </header>
+
+  <p class="note" id="phones">Usa le cuffie o gli auricolari: senza, il telefono riprende la voce trasformata dall'altoparlante e parte il fischio (effetto Larsen).</p>
+  <p class="note" id="micErr" hidden></p>
+
+  <div class="stage">
+    <button id="mic" type="button" aria-pressed="false">Accendi</button>
+    <div class="status">
+      <div id="state">Spento</div>
+      <div class="meter" aria-hidden="true"><div id="level"></div></div>
+      <div class="lat" id="lat">ritardo stimato: –</div>
+    </div>
+  </div>
+
+  <section>
+    <h2>Voce</h2>
+    <div class="groups" id="presets"></div>
+  </section>
+
+  <section class="fine">
+    <div class="ctrl">
+      <label for="pitch">Tono</label><output id="pitchOut">0 semitoni</output>
+      <input id="pitch" type="range" min="-12" max="12" step="1" value="0">
+    </div>
+    <div class="ctrl">
+      <label for="bright">Timbro</label><output id="brightOut">neutro</output>
+      <input id="bright" type="range" min="-10" max="10" step="1" value="0">
+    </div>
+    <div class="ctrl">
+      <label for="vol">Volume in cuffia</label><output id="volOut">100%</output>
+      <input id="vol" type="range" min="0" max="200" step="5" value="100">
+    </div>
+  </section>
+
+  <section>
+    <h2>Registra la voce trasformata</h2>
+    <div class="row">
+      <button class="btn" id="rec" type="button" disabled>Registra</button>
+      <label class="btn" for="file">Trasforma un audio salvato</label>
+      <input id="file" type="file" accept="audio/*" hidden>
+    </div>
+    <p class="small">La registrazione funziona solo con il microfono acceso. Con "Trasforma un audio salvato" scegli una nota vocale dal telefono e la senti con la voce scelta.</p>
+    <audio id="player" controls hidden></audio>
+  </section>
+</div>
+
+<script>
+(() => {
+  const P = "Persone", C = "Creature", E = "Effetti";
+  const PRESETS = [
+    { g: P, id: "normale", name: "Normale", hint: "nessun effetto", pitch: 0, bright: 0 },
+    { g: P, id: "maschile", name: "Uomo", hint: "più grave", pitch: -4, bright: -4 },
+    { g: P, id: "baritono", name: "Uomo profondo", hint: "voce bassa e piena", pitch: -6, bright: -6, fx: "warm" },
+    { g: P, id: "ragazzo", name: "Ragazzo", hint: "appena più grave", pitch: -2, bright: -1 },
+    { g: P, id: "rauco", name: "Uomo rauco", hint: "voce da fumatore", pitch: -4, bright: -3, fx: "husky" },
+    { g: P, id: "femminile", name: "Donna", hint: "più acuta", pitch: 5, bright: 4 },
+    { g: P, id: "donnabassa", name: "Donna profonda", hint: "acuta ma calda", pitch: 3, bright: 0, fx: "warm" },
+    { g: P, id: "donnadolce", name: "Donna dolce", hint: "morbida e soffiata", pitch: 4, bright: 2, fx: "soft" },
+    { g: P, id: "ragazza", name: "Ragazza", hint: "acuta e brillante", pitch: 6, bright: 5 },
+    { g: P, id: "bambino", name: "Bambino", hint: "molto acuta", pitch: 8, bright: 5 },
+    { g: P, id: "bambina", name: "Bambina", hint: "acutissima e chiara", pitch: 10, bright: 7 },
+    { g: P, id: "piccolo", name: "Bimbo piccolo", hint: "da asilo", pitch: 11, bright: 6, fx: "soft" },
+    { g: P, id: "anziano", name: "Anziano", hint: "tremolante e un po' rauco", pitch: -2, bright: -3, fx: "oldman" },
+    { g: P, id: "anziana", name: "Anziana", hint: "tremolante e sottile", pitch: 3, bright: 1, fx: "oldwoman" },
+    { g: C, id: "orco", name: "Orco", hint: "cupa e ruvida", pitch: -9, bright: -6, fx: "grit" },
+    { g: C, id: "mostro", name: "Mostro", hint: "profondissima e ringhiante", pitch: -12, bright: -8, fx: "monster" },
+    { g: C, id: "demone", name: "Demone", hint: "cupa, vibrante, con eco", pitch: -10, bright: -5, fx: "demon" },
+    { g: C, id: "gigante", name: "Gigante", hint: "enorme e rimbombante", pitch: -7, bright: -9, fx: "giant" },
+    { g: C, id: "zombie", name: "Zombie", hint: "rauca e strascicata", pitch: -5, bright: -3, fx: "zombie" },
+    { g: C, id: "vampiro", name: "Vampiro", hint: "bassa, elegante, in una cripta", pitch: -3, bright: -4, fx: "vampire" },
+    { g: C, id: "fantasma", name: "Fantasma", hint: "sospirata, tremolante, lontana", pitch: 3, bright: 6, fx: "ghost" },
+    { g: C, id: "strega", name: "Strega", hint: "acuta e graffiante", pitch: 7, bright: 5, fx: "witch" },
+    { g: C, id: "fata", name: "Fata", hint: "acutissima e scintillante", pitch: 10, bright: 8, fx: "fairy" },
+    { g: C, id: "alieno", name: "Alieno", hint: "metallica e acuta", pitch: 4, bright: 3, fx: "alien" },
+    { g: C, id: "corvo", name: "Corvo", hint: "gracchiante e nasale", pitch: 5, bright: 4, fx: "crow" },
+    { g: C, id: "scoiattolo", name: "Scoiattolo", hint: "velocissima da cartone", pitch: 12, bright: 4 },
+    { g: E, id: "robot", name: "Robot", hint: "metallica", pitch: 0, bright: 2, fx: "robot" },
+    { g: E, id: "cyborg", name: "Cyborg", hint: "metà umana, metà macchina", pitch: -3, bright: 1, fx: "cyborg" },
+    { g: E, id: "radio", name: "Radio", hint: "vecchio altoparlante", pitch: 0, bright: 0, fx: "radio" },
+    { g: E, id: "telefono", name: "Telefono", hint: "voce al telefono", pitch: 0, bright: 0, fx: "phone" },
+    { g: E, id: "megafono", name: "Megafono", hint: "annuncio gracchiante", pitch: 0, bright: 2, fx: "megaphone" },
+    { g: E, id: "caverna", name: "Caverna", hint: "eco lunga", pitch: -2, bright: -2, fx: "echo" },
+    { g: E, id: "sottacqua", name: "Sott'acqua", hint: "ovattata e ondeggiante", pitch: -1, bright: -6, fx: "underwater" },
+  ];
+
+  const $ = (id) => document.getElementById(id);
+  const ui = { mic: $("mic"), state: $("state"), level: $("level"), lat: $("lat"), err: $("micErr"),
+    pitch: $("pitch"), pitchOut: $("pitchOut"), bright: $("bright"), brightOut: $("brightOut"),
+    vol: $("vol"), volOut: $("volOut"), rec: $("rec"), file: $("file"), player: $("player") };
+
+  let ctx = null, chain = null, micStream = null, micSrc = null, fileSrc = null, recorder = null, current = PRESETS[0];
+
+  /* Pitch shifter a linee di ritardo modulate (tecnica "Jungle" di Chris Wilson):
+     due ritardi che scorrono a rampa, sfumati tra loro. Usa solo nodi nativi, quindi gira ovunque. */
+  const BUF = 0.1, FADE = 0.05, DELAY = 0.1;
+  function rampBuffer(c, up) {
+    const l1 = Math.round(BUF * c.sampleRate), l2 = Math.round((BUF - 2 * FADE) * c.sampleRate), len = l1 + l2;
+    const b = c.createBuffer(1, Math.max(len, l1), c.sampleRate), p = b.getChannelData(0);
+    for (let i = 0; i < l1; i++) p[i] = up ? (l1 - i) / len : i / l1;
+    return b;
+  }
+  function fadeBuffer(c) {
+    const l1 = Math.round(BUF * c.sampleRate), l2 = Math.round((BUF - 2 * FADE) * c.sampleRate), len = l1 + l2;
+    const b = c.createBuffer(1, Math.max(len, l1), c.sampleRate), p = b.getChannelData(0), f = FADE * c.sampleRate;
+    for (let i = 0; i < l1; i++) p[i] = i < f ? Math.sqrt(i / f) : i >= l1 - f ? Math.sqrt(1 - (i - (l1 - f)) / f) : 1;
+    return b;
+  }
+  function makeShifter(c) {
+    const input = c.createGain(), output = c.createGain();
+    const down = rampBuffer(c, false), up = rampBuffer(c, true), fb = fadeBuffer(c);
+    const src = (buf) => { const s = c.createBufferSource(); s.buffer = buf; s.loop = true; return s; };
+    const m1 = src(down), m2 = src(down), m3 = src(up), m4 = src(up), f1 = src(fb), f2 = src(fb);
+    const g1 = c.createGain(), g2 = c.createGain(), g3 = c.createGain(), g4 = c.createGain();
+    const depth1 = c.createGain(), depth2 = c.createGain();
+    const d1 = c.createDelay(2), d2 = c.createDelay(2), x1 = c.createGain(), x2 = c.createGain();
+    x1.gain.value = 0; x2.gain.value = 0;
+    m1.connect(g1); m2.connect(g2); m3.connect(g3); m4.connect(g4);
+    g1.connect(depth1); g3.connect(depth1); g2.connect(depth2); g4.connect(depth2);
+    depth1.connect(d1.delayTime); depth2.connect(d2.delayTime);
+    f1.connect(x1.gain); f2.connect(x2.gain);
+    // Senza spostamento il segnale passa diretto (dry), così "0 semitoni" non aggiunge ritardo.
+    const dry = c.createGain(), wet = c.createGain();
+    input.connect(d1); input.connect(d2); d1.connect(x1); d2.connect(x2); x1.connect(wet); x2.connect(wet);
+    input.connect(dry); wet.connect(output); dry.connect(output);
+    const t = c.currentTime + 0.05, t2 = t + BUF - FADE;
+    [m1, m3, f1].forEach((s) => s.start(t)); [m2, m4, f2].forEach((s) => s.start(t2));
+    function setSemitones(st) {
+      const now = c.currentTime;
+      if (st === 0) { wet.gain.setTargetAtTime(0, now, 0.02); dry.gain.setTargetAtTime(1, now, 0.02); return; }
+      const r = Math.pow(2, st / 12), upward = st > 0;
+      const amount = upward ? 2 * (r - 1) : 2 * (1 - r); // velocità della rampa → rapporto di pitch
+      [g1, g2].forEach((g) => g.gain.setValueAtTime(upward ? 0 : 1, now));
+      [g3, g4].forEach((g) => g.gain.setValueAtTime(upward ? 1 : 0, now));
+      [depth1, depth2].forEach((g) => g.gain.setTargetAtTime(0.5 * DELAY * amount, now, 0.01));
+      wet.gain.setTargetAtTime(1, now, 0.02); dry.gain.setTargetAtTime(0, now, 0.02);
+    }
+    setSemitones(0);
+    return { input, output, setSemitones };
+  }
+
+  function curve(k) {
+    const n = 1024, a = new Float32Array(n);
+    for (let i = 0; i < n; i++) { const x = (i * 2) / n - 1; a[i] = ((1 + k) * x) / (1 + k * Math.abs(x)); }
+    return a;
+  }
+
+  function buildChain(c) {
+    const input = c.createGain();
+    const shifter = makeShifter(c);
+    const hp = c.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 70;
+    const low = c.createBiquadFilter(); low.type = "lowshelf"; low.frequency.value = 220;
+    const high = c.createBiquadFilter(); high.type = "highshelf"; high.frequency.value = 2800;
+    // Effetti speciali
+    const band = c.createBiquadFilter(); band.type = "bandpass"; band.frequency.value = 1600; band.Q.value = 0.9;
+    const shaper = c.createWaveShaper(); shaper.curve = curve(0); shaper.oversample = "2x";
+    const ring = c.createGain(); ring.gain.value = 1;
+    const carrier = c.createOscillator(); carrier.frequency.value = 55; carrier.type = "sine";
+    const carrierAmt = c.createGain(); carrierAmt.gain.value = 0; carrier.connect(carrierAmt); carrierAmt.connect(ring.gain); carrier.start();
+    const echo = c.createDelay(1.5); echo.delayTime.value = 0.32;
+    const echoFb = c.createGain(); echoFb.gain.value = 0; const echoOut = c.createGain(); echoOut.gain.value = 0;
+    const bandBypass = c.createGain(), bandWet = c.createGain(); bandWet.gain.value = 0;
+    const comp = c.createDynamicsCompressor(); comp.threshold.value = -18; comp.ratio.value = 4;
+    // Tremolo: un oscillatore lento che fa oscillare il volume (serve al fantasma)
+    const trem = c.createGain(); const tremLfo = c.createOscillator(); tremLfo.frequency.value = 5;
+    const tremAmt = c.createGain(); tremAmt.gain.value = 0; tremLfo.connect(tremAmt); tremAmt.connect(trem.gain); tremLfo.start();
+    const vol = c.createGain();
+    const analyser = c.createAnalyser(); analyser.fftSize = 512;
+    const tap = c.createMediaStreamDestination();
+
+    input.connect(analyser);
+    const lp = c.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 18000;
+    // Vibrato: un piccolo ritardo che oscilla fa ondeggiare l'intonazione (voci anziane)
+    const vib = c.createDelay(0.05); vib.delayTime.value = 0.006;
+    const vibLfo = c.createOscillator(); vibLfo.frequency.value = 5.5; const vibAmt = c.createGain(); vibAmt.gain.value = 0;
+    vibLfo.connect(vibAmt); vibAmt.connect(vib.delayTime); vibLfo.start();
+    input.connect(shifter.input); shifter.output.connect(vib); vib.connect(hp); hp.connect(low); low.connect(high); high.connect(lp);
+    lp.connect(bandBypass); lp.connect(band); band.connect(bandWet);
+    bandBypass.connect(shaper); bandWet.connect(shaper);
+    shaper.connect(ring); ring.connect(comp);
+    comp.connect(echo); echo.connect(echoFb); echoFb.connect(echo); echo.connect(echoOut);
+    comp.connect(trem); echoOut.connect(trem); trem.connect(vol);
+    vol.connect(c.destination); vol.connect(tap);
+
+    // Parametri degli effetti per ogni stile: ring = modulazione metallica (quantità, frequenza),
+    // grit = distorsione, echo = [tempo, ritorno, volume], trem = [velocità, profondità], hp = taglio dei bassi
+    const FX = {
+      "":      {},
+      robot:   { ring: [1, 55] },
+      radio:   { band: [1600, 0.9], grit: 30 },
+      grit:    { grit: 8 },
+      echo:    { echo: [0.32, 0.45, 0.6] },
+      monster: { grit: 14, ring: [0.35, 28] },
+      demon:   { grit: 6, ring: [0.25, 40], echo: [0.09, 0.35, 0.5] },
+      ghost:   { echo: [0.21, 0.6, 0.75], trem: [6, 0.45], hp: 380 },
+      alien:   { ring: [0.7, 320] },
+      witch:   { grit: 10, trem: [9, 0.2], hp: 220 },
+      giant:   { echo: [0.14, 0.4, 0.55], grit: 3 },
+      zombie:  { grit: 12, trem: [3, 0.35], lp: 3500 },
+      vampire: { echo: [0.26, 0.3, 0.45], lp: 6000 },
+      cyborg:  { ring: [0.45, 110], grit: 4 },
+      fairy:   { echo: [0.07, 0.5, 0.5], trem: [11, 0.25], hp: 400 },
+      phone:   { band: [1700, 1.6], grit: 6 },
+      megaphone: { band: [1300, 1.1], grit: 45 },
+      // Corvo: banda stretta e nasale, distorsione forte e un tremolo velocissimo che diventa "gracchio"
+      crow:    { band: [1500, 2.2], grit: 35, trem: [28, 0.55], hp: 300 },
+      warm:    { lp: 7000 },
+      husky:   { grit: 5, lp: 6000 },
+      soft:    { lp: 6500, hp: 160 },
+      oldman:  { vib: [5.5, 0.0012], trem: [5.5, 0.15], grit: 3, lp: 5000 },
+      oldwoman: { vib: [6, 0.0011], trem: [6, 0.15], lp: 6000, hp: 180 },
+      underwater: { lp: 650, trem: [2.5, 0.4], echo: [0.05, 0.4, 0.4] },
+    };
+
+    function apply(p) {
+      const now = c.currentTime, set = (param, v) => param.setTargetAtTime(v, now, 0.03);
+      shifter.setSemitones(p.pitch);
+      set(low.gain, -p.bright * 0.8); set(high.gain, p.bright * 0.9);
+      const f = FX[p.fx || ""] || {};
+      set(hp.frequency, f.hp || (p.bright > 2 ? 140 : 70));
+      const [ringAmt, ringHz] = f.ring || [0, 55];
+      set(carrierAmt.gain, ringAmt); set(ring.gain, 1 - ringAmt); set(carrier.frequency, ringHz);
+      set(bandWet.gain, f.band ? 1 : 0); set(bandBypass.gain, f.band ? 0 : 1);
+      if (f.band) { set(band.frequency, f.band[0]); set(band.Q, f.band[1]); }
+      set(lp.frequency, f.lp || 18000);
+      shaper.curve = curve(f.grit || 0);
+      const [eTime, eFb, eOut] = f.echo || [0.32, 0, 0];
+      set(echo.delayTime, eTime); set(echoFb.gain, eFb); set(echoOut.gain, eOut);
+      const [vHz, vDepth] = f.vib || [5.5, 0];
+      set(vibLfo.frequency, vHz); set(vibAmt.gain, vDepth);
+      const [tHz, tDepth] = f.trem || [5, 0];
+      set(tremLfo.frequency, tHz); set(tremAmt.gain, tDepth); set(trem.gain, 1 - tDepth);
+    }
+    return { input, vol, analyser, tap, apply };
+  }
+
+  function ensureCtx() {
+    if (ctx) return ctx;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    ctx = new AC({ latencyHint: "interactive" });
+    chain = buildChain(ctx);
+    chain.apply(current);
+    setVol();
+    meterLoop();
+    return ctx;
+  }
+
+  function meterLoop() {
+    const data = new Uint8Array(chain.analyser.fftSize);
+    const tick = () => {
+      chain.analyser.getByteTimeDomainData(data);
+      let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
+      ui.level.style.width = Math.min(100, (peak / 128) * 160) + "%";
+      requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  function showLatency() {
+    if (!ctx) return;
+    const ms = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
+    const shift = Number(ui.pitch.value) !== 0 ? 50 : 0; // il pitch shifter aggiunge circa 50 ms
+    ui.lat.textContent = ms > 0 ? `ritardo stimato: ~${Math.round(ms + shift)} ms` : "ritardo stimato: non disponibile su questo browser";
+  }
+
+  async function micOn() {
+    ui.err.hidden = true;
+    ensureCtx();
+    await ctx.resume();
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, latency: 0 },
+      });
+    } catch (e) {
+      ui.err.hidden = false;
+      ui.err.textContent = "Il microfono non è disponibile in questa pagina (" + (e && e.name ? e.name : "errore") +
+        "). Se la stai aprendo dentro Claude, il microfono è bloccato: apri la versione scaricabile dal browser del telefono. Nel frattempo puoi usare \"Trasforma un audio salvato\".";
+      return;
+    }
+    micSrc = ctx.createMediaStreamSource(micStream);
+    micSrc.connect(chain.input);
+    ui.mic.classList.add("on"); ui.mic.textContent = "Spegni"; ui.mic.setAttribute("aria-pressed", "true");
+    ui.state.textContent = "In ascolto: " + current.name.toLowerCase();
+    ui.rec.disabled = false;
+    showLatency();
+  }
+
+  function micOff() {
+    if (recorder && recorder.state === "recording") recorder.stop();
+    if (micSrc) micSrc.disconnect();
+    if (micStream) micStream.getTracks().forEach((t) => t.stop());
+    micSrc = null; micStream = null;
+    ui.mic.classList.remove("on"); ui.mic.textContent = "Accendi"; ui.mic.setAttribute("aria-pressed", "false");
+    ui.state.textContent = "Spento"; ui.rec.disabled = true;
+  }
+
+  ui.mic.addEventListener("click", () => (micStream ? micOff() : micOn()));
+
+  // Preset
+  const grid = $("presets");
+  let groupGrid = null, lastGroup = null;
+  PRESETS.forEach((p) => {
+    if (p.g !== lastGroup) {
+      lastGroup = p.g;
+      const h3 = document.createElement("h3"); h3.textContent = p.g;
+      groupGrid = document.createElement("div"); groupGrid.className = "presets";
+      grid.append(h3, groupGrid);
+    }
+    const b = document.createElement("button");
+    b.type = "button"; b.className = "preset"; b.id = "preset-" + p.id; b.setAttribute("aria-pressed", p === current ? "true" : "false");
+    const n = document.createElement("b"); n.textContent = p.name;
+    const h = document.createElement("span"); h.textContent = p.hint;
+    b.append(n, h);
+    b.addEventListener("click", () => choose(p));
+    groupGrid.append(b);
+  });
+  function choose(p) {
+    current = { ...p };
+    grid.querySelectorAll(".preset").forEach((el) => el.setAttribute("aria-pressed", el.id === "preset-" + p.id ? "true" : "false"));
+    ui.pitch.value = p.pitch; ui.bright.value = p.bright;
+    syncLabels();
+    if (chain) chain.apply(current);
+    if (micStream) ui.state.textContent = "In ascolto: " + p.name.toLowerCase();
+    showLatency();
+  }
+
+  function syncLabels() {
+    const st = Number(ui.pitch.value), br = Number(ui.bright.value);
+    ui.pitchOut.textContent = (st > 0 ? "+" : "") + st + " semitoni";
+    ui.brightOut.textContent = br === 0 ? "neutro" : br > 0 ? "più chiaro " + br : "più scuro " + -br;
+  }
+  ui.pitch.addEventListener("input", () => { current.pitch = Number(ui.pitch.value); syncLabels(); if (chain) chain.apply(current); showLatency(); });
+  ui.bright.addEventListener("input", () => { current.bright = Number(ui.bright.value); syncLabels(); if (chain) chain.apply(current); });
+  function setVol() { ui.volOut.textContent = ui.vol.value + "%"; if (chain) chain.vol.gain.setTargetAtTime(ui.vol.value / 100, ctx.currentTime, 0.03); }
+  ui.vol.addEventListener("input", setVol);
+
+  // Registrazione dell'uscita trasformata
+  ui.rec.addEventListener("click", () => {
+    if (recorder && recorder.state === "recording") { recorder.stop(); return; }
+    if (typeof MediaRecorder === "undefined") { ui.rec.textContent = "Registrazione non supportata"; return; }
+    const chunks = [];
+    recorder = new MediaRecorder(chain.tap.stream);
+    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    recorder.onstop = () => {
+      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      ui.player.src = URL.createObjectURL(blob); ui.player.hidden = false;
+      ui.rec.textContent = "Registra";
+    };
+    recorder.start(); ui.rec.textContent = "Ferma registrazione";
+  });
+
+  // Audio da file: lo fa passare nella stessa catena
+  ui.file.addEventListener("change", async () => {
+    const f = ui.file.files && ui.file.files[0]; if (!f) return;
+    ensureCtx(); await ctx.resume();
+    try {
+      const buf = await ctx.decodeAudioData(await f.arrayBuffer());
+      if (fileSrc) { try { fileSrc.stop(); } catch (_) {} }
+      fileSrc = ctx.createBufferSource(); fileSrc.buffer = buf; fileSrc.connect(chain.input); fileSrc.start();
+      ui.state.textContent = "Riproduco il file: " + current.name.toLowerCase();
+      fileSrc.onended = () => { if (!micStream) ui.state.textContent = "Spento"; };
+    } catch (e) {
+      ui.err.hidden = false; ui.err.textContent = "Non riesco a leggere questo file audio. Prova con un file m4a, mp3 o wav.";
+    }
+    ui.file.value = "";
+  });
+
+  syncLabels();
+})();
+</script>
+<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});</script>
+</body></html>
