@@ -68,6 +68,9 @@ h2 { font-family: var(--display); font-weight: 600; font-size: 17px; margin: 0 0
 .ctrl label { font-weight: 500; }
 .ctrl output { font-family: var(--mono); font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ctrl input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); }
+.check { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; align-items: center; font-weight: 500; }
+.check input { width: 20px; height: 20px; accent-color: var(--accent); }
+.check span { grid-column: 2; font-weight: 400; font-size: 13px; color: var(--muted); }
 .fine { display: flex; flex-direction: column; gap: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; }
 .btn { border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 10px; padding: 9px 14px; font: inherit; font-weight: 500; cursor: pointer; }
@@ -82,7 +85,7 @@ audio { width: 100%; }
     <p class="sub">Parla nel microfono e senti la tua voce trasformata mentre parli.</p>
   </header>
 
-  <p class="note" id="phones">Usa le cuffie o gli auricolari: senza, il telefono riprende la voce trasformata dall'altoparlante e parte il fischio (effetto Larsen).</p>
+  <p class="note" id="phones">Usa le cuffie, meglio se col filo: senza, il telefono riprende la voce trasformata e parte il fischio. Le cuffie Bluetooth funzionano ma aggiungono un ritardo che l'app non può togliere.</p>
   <p class="note" id="micErr" hidden></p>
 
   <div class="stage">
@@ -112,6 +115,8 @@ audio { width: 100%; }
       <label for="vol">Volume in cuffia</label><output id="volOut">100%</output>
       <input id="vol" type="range" min="0" max="250" step="5" value="100">
     </div>
+    <label class="check" for="denoise"><input id="denoise" type="checkbox"> Filtro rumore del telefono
+      <span>Utile in posti rumorosi, ma aggiunge ritardo e può tagliare la voce. Usalo solo con le cuffie.</span></label>
   </section>
 
   <section>
@@ -168,13 +173,13 @@ audio { width: 100%; }
   const $ = (id) => document.getElementById(id);
   const ui = { mic: $("mic"), state: $("state"), level: $("level"), lat: $("lat"), err: $("micErr"),
     pitch: $("pitch"), pitchOut: $("pitchOut"), bright: $("bright"), brightOut: $("brightOut"),
-    vol: $("vol"), volOut: $("volOut"), rec: $("rec"), file: $("file"), player: $("player") };
+    vol: $("vol"), volOut: $("volOut"), denoise: $("denoise"), rec: $("rec"), file: $("file"), player: $("player") };
 
   let ctx = null, chain = null, micStream = null, micSrc = null, fileSrc = null, recorder = null, current = PRESETS[0];
 
   /* Pitch shifter a linee di ritardo modulate (tecnica "Jungle" di Chris Wilson):
      due ritardi che scorrono a rampa, sfumati tra loro. Usa solo nodi nativi, quindi gira ovunque. */
-  const BUF = 0.1, FADE = 0.05, DELAY = 0.1;
+  const BUF = 0.07, FADE = 0.035, DELAY = BUF; // finestra corta = meno ritardo
   function rampBuffer(c, up) {
     const l1 = Math.round(BUF * c.sampleRate), l2 = Math.round((BUF - 2 * FADE) * c.sampleRate), len = l1 + l2;
     const b = c.createBuffer(1, Math.max(len, l1), c.sampleRate), p = b.getChannelData(0);
@@ -331,10 +336,15 @@ audio { width: 100%; }
 
   function meterLoop() {
     const data = new Uint8Array(chain.analyser.fftSize);
+    let quietSince = 0;
     const tick = () => {
       chain.analyser.getByteTimeDomainData(data);
       let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
       ui.level.style.width = Math.min(100, (peak / 128) * 160) + "%";
+      // Dopo almeno mezzo secondo di silenzio, e non più di una volta ogni 8 secondi, azzera la coda del microfono
+      const now = performance.now();
+      if (peak > 6) quietSince = 0; else if (!quietSince) quietSince = now;
+      if (micStream && quietSince && now - quietSince > 500 && now - lastAttach > 8000) attachMic();
       requestAnimationFrame(tick);
     };
     tick();
@@ -343,7 +353,7 @@ audio { width: 100%; }
   function showLatency() {
     if (!ctx) return;
     const ms = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
-    const shift = Number(ui.pitch.value) !== 0 ? 50 : 0; // il pitch shifter aggiunge circa 50 ms
+    const shift = Number(ui.pitch.value) !== 0 ? 35 : 0; // il pitch shifter aggiunge circa 35 ms
     ui.lat.textContent = ms > 0 ? `ritardo stimato: ~${Math.round(ms + shift)} ms` : "ritardo stimato: non disponibile su questo browser";
   }
 
@@ -352,8 +362,11 @@ audio { width: 100%; }
     ensureCtx();
     await ctx.resume();
     try {
+      // Cancellazione dell'eco e riduzione del rumore del telefono scambiano la voce trasformata per un'eco
+      // e la tagliano dopo la prima parola; inoltre aggiungono ritardo. Restano spente se non le chiedi.
+      const clean = ui.denoise.checked;
       micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, latency: 0 },
+        audio: { echoCancellation: clean, noiseSuppression: clean, autoGainControl: false, latency: 0, channelCount: 1 },
       });
     } catch (e) {
       ui.err.hidden = false;
@@ -361,12 +374,22 @@ audio { width: 100%; }
         "). Se la stai aprendo dentro Claude, il microfono è bloccato: apri la versione scaricabile dal browser del telefono. Nel frattempo puoi usare \"Trasforma un audio salvato\".";
       return;
     }
-    micSrc = ctx.createMediaStreamSource(micStream);
-    micSrc.connect(chain.input);
+    attachMic();
     ui.mic.classList.add("on"); ui.mic.textContent = "Spegni"; ui.mic.setAttribute("aria-pressed", "true");
     ui.state.textContent = "In ascolto: " + current.name.toLowerCase();
     ui.rec.disabled = false;
     showLatency();
+  }
+
+  // Ricollega il microfono con un buffer vuoto. Alcuni telefoni lasciano crescere piano piano
+  // la coda audio in ingresso; ripartire da zero nelle pause elimina il ritardo accumulato.
+  let lastAttach = 0;
+  function attachMic() {
+    const old = micSrc;
+    micSrc = ctx.createMediaStreamSource(micStream);
+    micSrc.connect(chain.input);
+    if (old) old.disconnect();
+    lastAttach = performance.now();
   }
 
   function micOff() {
@@ -379,6 +402,10 @@ audio { width: 100%; }
   }
 
   ui.mic.addEventListener("click", () => (micStream ? micOff() : micOn()));
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && ctx && micStream) { ctx.resume(); attachMic(); }
+  });
+  ui.denoise.addEventListener("change", () => { if (micStream) { micOff(); micOn(); } });
 
   // Preset
   const grid = $("presets");
@@ -430,7 +457,7 @@ audio { width: 100%; }
       ui.player.src = URL.createObjectURL(blob); ui.player.hidden = false;
       ui.rec.textContent = "Registra";
     };
-    recorder.start(); ui.rec.textContent = "Ferma registrazione";
+    recorder.start(500); ui.rec.textContent = "Ferma registrazione";
   });
 
   // Audio da file: lo fa passare nella stessa catena
