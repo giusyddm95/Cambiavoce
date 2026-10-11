@@ -201,6 +201,8 @@ audio { width: 100%; }
   let wantedMic = "";
   try { wantedMic = localStorage.getItem("cambiavoce-mic") || ""; } catch (_) {}
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+  // Dentro la pagina di Claude il browser non lascia salvare file .wav: lì il pulsante Salva resta nascosto
+  const inClaude = !!(window.claude && typeof window.claude.use === "function");
 
   /* Pitch shifter a linee di ritardo modulate (tecnica "Jungle" di Chris Wilson):
      due ritardi che scorrono a rampa, sfumati tra loro. Usa solo nodi nativi, quindi gira ovunque. */
@@ -767,7 +769,7 @@ audio { width: 100%; }
     takeBlob = wavBlob(res.x, res.sr);
     takeUrl = URL.createObjectURL(takeBlob);
     takeName = p.id;
-    ui.player.src = takeUrl; ui.player.hidden = false; ui.save.hidden = false;
+    ui.player.src = takeUrl; ui.player.hidden = false; ui.save.hidden = inClaude;
     ui.recInfo.textContent = "Registrazione di " + fmtTime(takeBuf.duration) + " con la voce " + name + ". Se scegli un'altra voce, la registrazione si aggiorna.";
   }
 
