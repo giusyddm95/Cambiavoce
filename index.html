@@ -77,6 +77,12 @@ h2 { font-family: var(--display); font-weight: 600; font-size: 17px; margin: 0 0
 .btn:disabled { opacity: .45; cursor: default; }
 audio { width: 100%; }
 .small { font-size: 13px; color: var(--muted); }
+.btn.live { background: var(--live); border-color: var(--live); color: #fff; }
+.pick { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.pick label { font-weight: 500; }
+.pick select { font: inherit; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 10px; max-width: 100%; }
+.pick span { font-size: 13px; color: var(--muted); }
+#save { margin-top: 10px; }
 </style>
 
 <div class="wrap">
@@ -85,7 +91,7 @@ audio { width: 100%; }
     <p class="sub">Parla nel microfono e senti la tua voce trasformata mentre parli.</p>
   </header>
 
-  <p class="note" id="phones">Usa le cuffie, meglio se col filo: senza, il telefono riprende la voce trasformata e parte il fischio. Con le cuffie Bluetooth, appena accendi il microfono l'iPhone le mette in modalità chiamata: il suono peggiora e arriva in ritardo, e l'app non può evitarlo.</p>
+  <p class="note" id="phones">Per sentirti dal vivo servono le cuffie, meglio col filo: senza, il telefono riprende la voce trasformata e parte il fischio. Con le cuffie Bluetooth, su iPhone il suono dal vivo può arrivare in ritardo, a scatti o confuso. Per preparare frasi da far sentire agli altri usa Registra, più in basso: non passa dall'ascolto dal vivo.</p>
   <p class="note" id="micErr" hidden></p>
 
   <div class="stage">
@@ -123,16 +129,22 @@ audio { width: 100%; }
 
   <section>
     <h2>Registra la voce trasformata</h2>
+    <div class="pick" id="micRow" hidden>
+      <label for="micSel">Microfono</label>
+      <select id="micSel"><option value="">Automatico</option></select>
+      <span>Con le cuffie Bluetooth, il microfono dell'iPhone dovrebbe registrare meglio di quello delle cuffie. Se lo scegli e ti ascolti dal vivo, però, il suono potrebbe uscire dall'altoparlante del telefono.</span>
+    </div>
     <div class="row">
-      <button class="btn" id="rec" type="button" disabled>Registra</button>
+      <button class="btn" id="rec" type="button">Registra</button>
       <label class="btn" for="file">Trasforma un audio salvato</label>
       <input id="file" type="file" accept="audio/*" hidden>
     </div>
-    <p class="small">La registrazione funziona solo con il microfono acceso. Con "Trasforma un audio salvato" scegli una nota vocale dal telefono e la senti con la voce scelta.</p>
+    <p class="small" id="recInfo">Premi Registra, parla e premi Ferma. Non serve accendere il microfono qui sopra: mentre registri non senti niente, la voce scelta si applica dopo e puoi cambiarla anche a registrazione finita. "Trasforma un audio salvato" fa lo stesso con una nota vocale del telefono.</p>
     <audio id="player" controls hidden></audio>
+    <button class="btn" id="save" type="button" hidden>Salva o condividi</button>
   </section>
 
-  <p class="small" id="info">Versione 7</p>
+  <p class="small" id="info">Versione 9</p>
 </div>
 
 <script>
@@ -177,11 +189,18 @@ audio { width: 100%; }
   const $ = (id) => document.getElementById(id);
   const ui = { mic: $("mic"), state: $("state"), level: $("level"), lat: $("lat"), err: $("micErr"),
     pitch: $("pitch"), pitchOut: $("pitchOut"), bright: $("bright"), brightOut: $("brightOut"),
-    vol: $("vol"), volOut: $("volOut"), denoise: $("denoise"), stable: $("stable"), info: $("info"), rec: $("rec"), file: $("file"), player: $("player") };
+    vol: $("vol"), volOut: $("volOut"), denoise: $("denoise"), stable: $("stable"), info: $("info"), rec: $("rec"), file: $("file"), player: $("player"),
+    micRow: $("micRow"), micSel: $("micSel"), save: $("save"), recInfo: $("recInfo") };
 
-  const VERSION = 8;
-  let ctx = null, chain = null, micStream = null, micSrc = null, fileSrc = null, recorder = null, current = PRESETS[0];
-  let ctxReady = null, meterOn = false, starting = false, micRate = 0, rateMatched = false;
+  const VERSION = 9;
+  let ctx = null, chain = null, micStream = null, micSrc = null, current = PRESETS[0];
+  let ctxReady = null, meterOn = false, starting = false, micRate = 0, micLabel = "", rateMatched = false;
+  let liveOn = false; // true = la voce trasformata esce dal vivo; false = microfono aperto solo per registrare
+  // rec = registrazione in corso; take = audio registrato così com'è, a cui si applica la voce scelta
+  let rec = null, busy = false, takeBuf = null, takeBlob = null, takeUrl = "", takeName = "", renderId = 0, renderTimer = 0;
+  let wantedMic = "";
+  try { wantedMic = localStorage.getItem("cambiavoce-mic") || ""; } catch (_) {}
+  const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
 
   /* Pitch shifter a linee di ritardo modulate (tecnica "Jungle" di Chris Wilson):
      due ritardi che scorrono a rampa, sfumati tra loro. Usa solo nodi nativi, quindi gira ovunque. */
@@ -239,12 +258,13 @@ audio { width: 100%; }
 
   // Cambio di tono principale: gira nel file voce-worklet.js e allinea le giunte alla forma d'onda.
   // Se il browser non lo supporta resta il metodo vecchio a linee di ritardo.
-  async function makeTono(c) {
+  async function makeTono(c, st = 0, compat = false) {
     try {
-      if (!c.audioWorklet || typeof AudioWorkletNode === "undefined") throw new Error("AudioWorklet assente");
+      if (compat || !c.audioWorklet || typeof AudioWorkletNode === "undefined") throw new Error("AudioWorklet assente");
       await c.audioWorklet.addModule("voce-worklet.js");
       const node = new AudioWorkletNode(c, "voce-tono", {
         numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: "explicit",
+        processorOptions: { semitones: st },
       });
       return { input: node, output: node, kind: "fluido", setSemitones: (st) => node.port.postMessage({ semitones: st }), delayMs: (st) => (st ? 11 : 0) };
     } catch (e) {
@@ -253,7 +273,37 @@ audio { width: 100%; }
     }
   }
 
-  function buildChain(c, shifter) {
+  // Parametri degli effetti per ogni stile: ring = modulazione metallica (quantità, frequenza),
+  // grit = distorsione, echo = [tempo, ritorno, volume], trem = [velocità, profondità], hp = taglio dei bassi
+  const FX = {
+    "":      {},
+    robot:   { ring: [1, 55] },
+    radio:   { band: [1600, 0.9], grit: 30 },
+    grit:    { grit: 8 },
+    echo:    { echo: [0.32, 0.45, 0.6] },
+    monster: { grit: 14, ring: [0.35, 28] },
+    demon:   { grit: 6, ring: [0.25, 40], echo: [0.09, 0.35, 0.5] },
+    ghost:   { echo: [0.21, 0.6, 0.75], trem: [6, 0.45], hp: 380 },
+    alien:   { ring: [0.7, 320] },
+    witch:   { grit: 10, trem: [9, 0.2], hp: 220 },
+    giant:   { echo: [0.14, 0.4, 0.55], grit: 3 },
+    zombie:  { grit: 12, trem: [3, 0.35], lp: 3500 },
+    vampire: { echo: [0.26, 0.3, 0.45], lp: 6000 },
+    cyborg:  { ring: [0.45, 110], grit: 4 },
+    fairy:   { echo: [0.07, 0.5, 0.5], trem: [11, 0.25], hp: 400 },
+    phone:   { band: [1700, 1.6], grit: 6 },
+    megaphone: { band: [1300, 1.1], grit: 45 },
+    // Corvo: banda stretta e nasale, distorsione forte e un tremolo velocissimo che diventa "gracchio"
+    crow:    { band: [1500, 2.2], grit: 35, trem: [28, 0.55], hp: 300 },
+    warm:    { lp: 7000 },
+    husky:   { grit: 5, lp: 6000 },
+    soft:    { lp: 6500, hp: 160 },
+    oldman:  { vib: [5.5, 0.0012], trem: [5.5, 0.15], grit: 3, lp: 5000 },
+    oldwoman: { vib: [6, 0.0011], trem: [6, 0.15], lp: 6000, hp: 180 },
+    underwater: { lp: 650, trem: [2.5, 0.4], echo: [0.05, 0.4, 0.4] },
+  };
+
+  function buildChain(c, shifter, offline) {
     const input = c.createGain();
     const hp = c.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 70;
     const low = c.createBiquadFilter(); low.type = "lowshelf"; low.frequency.value = 220;
@@ -273,7 +323,6 @@ audio { width: 100%; }
     const tremAmt = c.createGain(); tremAmt.gain.value = 0; tremLfo.connect(tremAmt); tremAmt.connect(trem.gain); tremLfo.start();
     const vol = c.createGain();
     const analyser = c.createAnalyser(); analyser.fftSize = 512;
-    const tap = c.createMediaStreamDestination();
 
     input.connect(analyser);
     const lp = c.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 18000;
@@ -290,40 +339,22 @@ audio { width: 100%; }
     const limiter = c.createDynamicsCompressor();
     limiter.threshold.value = -3; limiter.knee.value = 3; limiter.ratio.value = 20; limiter.attack.value = 0.002; limiter.release.value = 0.12;
     comp.connect(trem); echoOut.connect(trem); trem.connect(vol); vol.connect(limiter);
-    limiter.connect(c.destination); limiter.connect(tap);
+    // Dal vivo l'uscita passa da "monitor", che resta a zero quando il microfono è aperto solo per registrare
+    const monitor = c.createGain(); monitor.gain.value = offline ? 1 : 0;
+    limiter.connect(monitor); monitor.connect(c.destination);
+    // Registratore di riserva (vedi voce-worklet.js): riceve il microfono così com'è, senza effetti
+    let rec = null;
+    if (!offline && shifter.kind === "fluido") {
+      try {
+        rec = new AudioWorkletNode(c, "voce-registra", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: "explicit" });
+        const sink = c.createGain(); sink.gain.value = 0; rec.connect(sink); sink.connect(c.destination);
+      } catch (e) { rec = null; }
+    }
 
-    // Parametri degli effetti per ogni stile: ring = modulazione metallica (quantità, frequenza),
-    // grit = distorsione, echo = [tempo, ritorno, volume], trem = [velocità, profondità], hp = taglio dei bassi
-    const FX = {
-      "":      {},
-      robot:   { ring: [1, 55] },
-      radio:   { band: [1600, 0.9], grit: 30 },
-      grit:    { grit: 8 },
-      echo:    { echo: [0.32, 0.45, 0.6] },
-      monster: { grit: 14, ring: [0.35, 28] },
-      demon:   { grit: 6, ring: [0.25, 40], echo: [0.09, 0.35, 0.5] },
-      ghost:   { echo: [0.21, 0.6, 0.75], trem: [6, 0.45], hp: 380 },
-      alien:   { ring: [0.7, 320] },
-      witch:   { grit: 10, trem: [9, 0.2], hp: 220 },
-      giant:   { echo: [0.14, 0.4, 0.55], grit: 3 },
-      zombie:  { grit: 12, trem: [3, 0.35], lp: 3500 },
-      vampire: { echo: [0.26, 0.3, 0.45], lp: 6000 },
-      cyborg:  { ring: [0.45, 110], grit: 4 },
-      fairy:   { echo: [0.07, 0.5, 0.5], trem: [11, 0.25], hp: 400 },
-      phone:   { band: [1700, 1.6], grit: 6 },
-      megaphone: { band: [1300, 1.1], grit: 45 },
-      // Corvo: banda stretta e nasale, distorsione forte e un tremolo velocissimo che diventa "gracchio"
-      crow:    { band: [1500, 2.2], grit: 35, trem: [28, 0.55], hp: 300 },
-      warm:    { lp: 7000 },
-      husky:   { grit: 5, lp: 6000 },
-      soft:    { lp: 6500, hp: 160 },
-      oldman:  { vib: [5.5, 0.0012], trem: [5.5, 0.15], grit: 3, lp: 5000 },
-      oldwoman: { vib: [6, 0.0011], trem: [6, 0.15], lp: 6000, hp: 180 },
-      underwater: { lp: 650, trem: [2.5, 0.4], echo: [0.05, 0.4, 0.4] },
-    };
-
-    function apply(p) {
-      const now = c.currentTime, set = (param, v) => param.setTargetAtTime(v, now, 0.03);
+    // instant = valori fissati subito (per applicare la voce a una registrazione), altrimenti con una breve sfumatura
+    function apply(p, instant) {
+      const now = c.currentTime;
+      const set = instant ? (param, v) => param.setValueAtTime(v, 0) : (param, v) => param.setTargetAtTime(v, now, 0.03);
       shifter.setSemitones(p.pitch);
       set(low.gain, -p.bright * 0.8); set(high.gain, p.bright * 0.9);
       const f = FX[p.fx || ""] || {};
@@ -341,7 +372,7 @@ audio { width: 100%; }
       const [tHz, tDepth] = f.trem || [5, 0];
       set(tremLfo.frequency, tHz); set(tremAmt.gain, tDepth); set(trem.gain, 1 - tDepth);
     }
-    return { input, vol, analyser, tap, apply, tono: shifter };
+    return { input, vol, analyser, monitor, rec, apply, tono: shifter };
   }
 
   function ensureCtx() {
@@ -375,6 +406,7 @@ audio { width: 100%; }
     chain = buildChain(c2, tono);
     chain.apply(current);
     setVol();
+    setMonitor();
     ctxReady = Promise.resolve(c2);
     rateMatched = true;
     if (old && old.close) old.close().catch(() => {});
@@ -384,7 +416,7 @@ audio { width: 100%; }
     const parts = ["Versione " + VERSION];
     if (chain) parts.push("cambio di tono " + chain.tono.kind);
     if (ctx) parts.push("audio " + (ctx.sampleRate / 1000).toFixed(1) + " kHz" + (rateMatched ? " (adattato al microfono)" : ""));
-    if (micRate) parts.push("microfono " + (micRate / 1000).toFixed(1) + " kHz");
+    if (micLabel || micRate) parts.push("microfono " + (micLabel ? micLabel + " " : "") + (micRate ? (micRate / 1000).toFixed(1) + " kHz" : ""));
     if (ui.stable.checked) parts.push("modalità stabile");
     ui.info.textContent = parts.join(" · ");
   }
@@ -403,7 +435,7 @@ audio { width: 100%; }
       floor = peak < floor ? peak : floor + 0.002 * (peak - floor);
       const now = performance.now();
       if (peak > Math.max(2, floor * 2.5)) quietSince = 0; else if (!quietSince) quietSince = now;
-      if (micStream && quietSince && now - quietSince > 1000 && now - lastAttach > 20000) attachMic();
+      if (micStream && !rec && quietSince && now - quietSince > 1000 && now - lastAttach > 20000) attachMic();
     };
     tick();
   }
@@ -415,42 +447,55 @@ audio { width: 100%; }
     ui.lat.textContent = ms > 0 ? `ritardo stimato: ~${Math.round(ms + shift)} ms` : "ritardo stimato: non disponibile su questo browser";
   }
 
-  async function micOn() {
-    if (starting) return;
+  // Apre il microfono scelto; se quel microfono non c'è più, ripiega su quello automatico
+  async function openMic() {
+    // Cancellazione dell'eco e riduzione del rumore del telefono scambiano la voce trasformata per un'eco
+    // e la tagliano dopo la prima parola; inoltre aggiungono ritardo. Restano spente se non le chiedi.
+    const clean = ui.denoise.checked;
+    const base = { echoCancellation: clean, noiseSuppression: clean, autoGainControl: false, latency: 0, channelCount: 1 };
+    if (wantedMic) {
+      try { return await navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: wantedMic } } }); }
+      catch (e) { if (e && (e.name === "NotAllowedError" || e.name === "SecurityError")) throw e; }
+    }
+    return navigator.mediaDevices.getUserMedia({ audio: base });
+  }
+
+  // silent = microfono aperto solo per registrare: la voce trasformata non esce dal vivo
+  async function micOn(silent) {
+    if (starting) return false;
     starting = true;
     ui.err.hidden = true;
-    const ready = ensureCtx();
+    const ready = ensureCtx(); // subito, dentro il tocco: su iPhone serve
     let stream;
     try {
-      // Cancellazione dell'eco e riduzione del rumore del telefono scambiano la voce trasformata per un'eco
-      // e la tagliano dopo la prima parola; inoltre aggiungono ritardo. Restano spente se non le chiedi.
-      const clean = ui.denoise.checked;
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: clean, noiseSuppression: clean, autoGainControl: false, latency: 0, channelCount: 1 },
-      });
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("microfono assente");
+      stream = await openMic();
     } catch (e) {
       starting = false;
-      ui.err.hidden = false;
-      ui.err.textContent = "Il microfono non è disponibile in questa pagina (" + (e && e.name ? e.name : "errore") +
-        "). Se la stai aprendo dentro Claude, il microfono è bloccato: apri la versione scaricabile dal browser del telefono. Nel frattempo puoi usare \"Trasforma un audio salvato\".";
-      return;
+      showErr("Il microfono non è disponibile in questa pagina (" + (e && e.name && e.name !== "Error" ? e.name : "bloccato") +
+        "). Se la stai aprendo dentro Claude, il microfono è bloccato: apri la versione scaricabile dal browser del telefono. Nel frattempo puoi usare \"Trasforma un audio salvato\".");
+      return false;
     }
     await ready;
     if (ctx.resume) await ctx.resume().catch(() => {});
     micStream = stream;
     starting = false;
+    liveOn = !silent;
     const track = stream.getAudioTracks()[0];
     const set = track && track.getSettings ? track.getSettings() : {};
     micRate = set.sampleRate || 0;
+    micLabel = (track && track.label) || "";
     // Con le cuffie Bluetooth l'iPhone passa in modalità chiamata e il microfono lavora a 16 kHz o meno,
-    // mentre l'audio dell'app era partito a 44,1 o 48 kHz. Provo a rifare l'audio alla frequenza del microfono.
-    if (micRate && Math.abs(micRate - ctx.sampleRate) > 1) await matchRate(micRate);
+    // mentre l'audio dell'app era partito a 44,1 o 48 kHz. Per l'ascolto dal vivo provo a rifare l'audio
+    // alla frequenza del microfono; per la sola registrazione non serve.
+    if (liveOn && micRate && Math.abs(micRate - ctx.sampleRate) > 1) await matchRate(micRate);
     attachMic();
-    ui.mic.classList.add("on"); ui.mic.textContent = "Spegni"; ui.mic.setAttribute("aria-pressed", "true");
-    ui.state.textContent = "In ascolto: " + current.name.toLowerCase();
-    ui.rec.disabled = false;
+    setMonitor();
+    updateMicUi();
+    listMics();
     showLatency();
     showDetails();
+    return true;
   }
 
   // Ricollega il microfono con un buffer vuoto. Alcuni telefoni lasciano crescere piano piano
@@ -460,34 +505,76 @@ audio { width: 100%; }
     const old = micSrc;
     micSrc = ctx.createMediaStreamSource(micStream);
     micSrc.connect(chain.input);
+    if (chain.rec) micSrc.connect(chain.rec);
     if (old) old.disconnect();
     lastAttach = performance.now();
   }
 
   function micOff() {
-    if (recorder && recorder.state === "recording") recorder.stop();
     if (micSrc) micSrc.disconnect();
     if (micStream) micStream.getTracks().forEach((t) => t.stop());
-    micSrc = null; micStream = null;
-    ui.mic.classList.remove("on"); ui.mic.textContent = "Accendi"; ui.mic.setAttribute("aria-pressed", "false");
-    ui.state.textContent = "Spento"; ui.rec.disabled = true;
+    micSrc = null; micStream = null; liveOn = false;
+    setMonitor();
+    updateMicUi();
   }
 
-  ui.mic.addEventListener("click", () => (micStream ? micOff() : micOn()));
+  // Dal vivo un filo sotto il massimo: il limitatore lascia passare picchi poco sopra 1, che altrimenti gracchiano
+  function setMonitor() {
+    if (chain && ctx) chain.monitor.gain.setTargetAtTime(micStream && liveOn ? 0.85 : 0, ctx.currentTime, 0.02);
+  }
+
+  function updateMicUi() {
+    const live = !!micStream && liveOn;
+    ui.mic.classList.toggle("on", live);
+    ui.mic.textContent = live ? "Spegni" : "Accendi";
+    ui.mic.setAttribute("aria-pressed", live ? "true" : "false");
+    const name = current.name.toLowerCase();
+    ui.state.textContent = rec ? (live ? "Registro e ascolto: " : "Registro: ") + name : live ? "In ascolto: " + name : "Spento";
+  }
+
+  function showErr(text) { ui.err.hidden = false; ui.err.textContent = text; }
+
+  ui.mic.addEventListener("click", () => {
+    if (micStream && liveOn) { if (rec) stopRec(true); else micOff(); return; }
+    // microfono già aperto per registrare: da qui in poi si sente anche dal vivo
+    if (micStream) { liveOn = true; if (rec) rec.silent = false; setMonitor(); updateMicUi(); showLatency(); return; }
+    micOn(false);
+  });
   try { ui.stable.checked = localStorage.getItem("cambiavoce-stabile") === "1"; } catch (_) {}
   ui.stable.addEventListener("change", () => {
     try { localStorage.setItem("cambiavoce-stabile", ui.stable.checked ? "1" : "0"); } catch (_) {}
     // la dimensione dei blocchi si sceglie solo creando l'audio da capo
-    const wasOn = !!micStream;
-    if (wasOn) micOff();
-    if (fileSrc) { try { fileSrc.stop(); } catch (_) {} fileSrc = null; }
+    const wasOn = !!micStream && liveOn;
+    if (micStream) micOff();
     if (ctx) { const old = ctx; ctx = null; chain = null; ctxReady = null; rateMatched = false; if (old.close) old.close().catch(() => {}); }
-    if (wasOn) micOn(); else showDetails();
+    if (wasOn) micOn(false); else showDetails();
   });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && ctx && micStream) { ctx.resume(); attachMic(); }
+    if (document.visibilityState === "visible" && ctx && micStream) { ctx.resume(); if (!rec) attachMic(); }
   });
-  ui.denoise.addEventListener("change", () => { if (micStream) { micOff(); micOn(); } });
+  ui.denoise.addEventListener("change", () => { if (micStream && liveOn && !rec) { micOff(); micOn(false); } });
+
+  // Elenco dei microfoni: compare solo se ce n'è più di uno (per esempio iPhone e cuffie).
+  // I nomi si vedono solo dopo il primo permesso al microfono.
+  async function listMics() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    let devs = [];
+    try { devs = await navigator.mediaDevices.enumerateDevices(); } catch (e) { return; }
+    const mics = devs.filter((d) => d.kind === "audioinput" && d.deviceId && d.deviceId !== "default" && d.deviceId !== "communications");
+    if (mics.length < 2 || !mics.some((d) => d.label)) { ui.micRow.hidden = true; return; }
+    ui.micSel.textContent = "";
+    const add = (v, t) => { const o = document.createElement("option"); o.value = v; o.textContent = t; ui.micSel.append(o); };
+    add("", "Automatico (lo sceglie il telefono)");
+    mics.forEach((d, i) => add(d.deviceId, d.label || "Microfono " + (i + 1)));
+    ui.micSel.value = mics.some((d) => d.deviceId === wantedMic) ? wantedMic : "";
+    ui.micRow.hidden = false;
+  }
+  ui.micSel.addEventListener("change", () => {
+    wantedMic = ui.micSel.value;
+    try { localStorage.setItem("cambiavoce-mic", wantedMic); } catch (_) {}
+    if (micStream && liveOn && !rec) { micOff(); micOn(false); }
+  });
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener("devicechange", listMics);
 
   // Preset
   const grid = $("presets");
@@ -513,8 +600,9 @@ audio { width: 100%; }
     ui.pitch.value = p.pitch; ui.bright.value = p.bright;
     syncLabels();
     if (chain) chain.apply(current);
-    if (micStream) ui.state.textContent = "In ascolto: " + p.name.toLowerCase();
+    updateMicUi();
     showLatency();
+    scheduleRender();
   }
 
   function syncLabels() {
@@ -522,45 +610,204 @@ audio { width: 100%; }
     ui.pitchOut.textContent = (st > 0 ? "+" : "") + st + " semitoni";
     ui.brightOut.textContent = br === 0 ? "neutro" : br > 0 ? "più chiaro " + br : "più scuro " + -br;
   }
-  ui.pitch.addEventListener("input", () => { current.pitch = Number(ui.pitch.value); syncLabels(); if (chain) chain.apply(current); showLatency(); });
-  ui.bright.addEventListener("input", () => { current.bright = Number(ui.bright.value); syncLabels(); if (chain) chain.apply(current); });
+  ui.pitch.addEventListener("input", () => { current.pitch = Number(ui.pitch.value); syncLabels(); if (chain) chain.apply(current); showLatency(); scheduleRender(); });
+  ui.bright.addEventListener("input", () => { current.bright = Number(ui.bright.value); syncLabels(); if (chain) chain.apply(current); scheduleRender(); });
   function setVol() { ui.volOut.textContent = ui.vol.value + "%"; if (chain) chain.vol.gain.setTargetAtTime((ui.vol.value / 100) * 4, ctx.currentTime, 0.03); }
   ui.vol.addEventListener("input", setVol);
 
-  // Registrazione dell'uscita trasformata
-  ui.rec.addEventListener("click", () => {
-    if (recorder && recorder.state === "recording") { recorder.stop(); return; }
-    if (typeof MediaRecorder === "undefined") { ui.rec.textContent = "Registrazione non supportata"; return; }
-    const chunks = [];
-    recorder = new MediaRecorder(chain.tap.stream);
-    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    recorder.onstop = () => {
-      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-      ui.player.src = URL.createObjectURL(blob); ui.player.hidden = false;
-      ui.rec.textContent = "Registra";
+  // Registrazione: il microfono si registra così com'è e la voce si applica dopo, tutta in una volta.
+  // Il risultato non passa dall'ascolto dal vivo (niente ritardi, scatti o fischi) e la voce si può cambiare dopo.
+  const MAX_REC = 300; // secondi
+  const recHint = ui.recInfo.textContent;
+  const fmtTime = (sec) => { const t = Math.max(0, Math.floor(sec)); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); };
+  function lockSettings(on) { ui.stable.disabled = on; ui.denoise.disabled = on; ui.micSel.disabled = on; ui.file.disabled = on; }
+
+  async function startRec() {
+    if (rec || busy || starting) return;
+    ui.err.hidden = true;
+    const silent = !micStream;
+    if (silent && !(await micOn(true))) return;
+    if (!micStream || rec) return;
+    const r = { silent, t0: performance.now(), mr: null, parts: [], pcm: [], pcmRate: ctx.sampleRate, node: chain.rec, timer: 0, onDone: null };
+    // 1) il registratore del telefono, direttamente sul microfono
+    if (typeof MediaRecorder !== "undefined") {
+      try {
+        r.mr = new MediaRecorder(micStream);
+        r.mr.ondataavailable = (e) => { if (e.data && e.data.size) r.parts.push(e.data); };
+        r.mr.start(1000);
+      } catch (e) { r.mr = null; }
+    }
+    // 2) la copia diretta dei campioni, di riserva
+    if (r.node) {
+      r.node.port.onmessage = (e) => { const d = e.data || {}; if (d.chunk) r.pcm.push(d.chunk); if (d.done && r.onDone) r.onDone(); };
+      r.node.port.postMessage({ cmd: "start" });
+    }
+    if (!r.mr && !r.node) {
+      if (silent) micOff();
+      showErr("Questo browser non riesce a registrare. Prova con Safari o Chrome aggiornati.");
+      return;
+    }
+    rec = r;
+    lockSettings(true);
+    ui.rec.classList.add("live");
+    const tick = () => {
+      const sec = (performance.now() - r.t0) / 1000;
+      ui.rec.textContent = "Ferma " + fmtTime(sec);
+      if (sec >= MAX_REC && rec === r) stopRec(false);
     };
-    recorder.start(500); ui.rec.textContent = "Ferma registrazione";
+    tick();
+    r.timer = setInterval(tick, 250);
+    updateMicUi();
+  }
+
+  async function stopRec(closeMic) {
+    const r = rec;
+    if (!r) return;
+    rec = null;
+    clearInterval(r.timer);
+    busy = true;
+    ui.rec.disabled = true; ui.rec.classList.remove("live"); ui.rec.textContent = "Elaboro…";
+    const secs = (performance.now() - r.t0) / 1000;
+    await Promise.all([
+      new Promise((res) => {
+        if (!r.mr || r.mr.state === "inactive") return res();
+        r.mr.onstop = () => res();
+        setTimeout(res, 2000);
+        try { r.mr.stop(); } catch (e) { res(); }
+      }),
+      new Promise((res) => {
+        if (!r.node) return res();
+        r.onDone = res;
+        setTimeout(res, 1000);
+        r.node.port.postMessage({ cmd: "stop" });
+      }),
+    ]);
+    // chiudendo il microfono l'iPhone riporta le cuffie Bluetooth alla qualità normale per riascoltare
+    if (closeMic || (r.silent && !liveOn)) micOff();
+    updateMicUi();
+    let buf = null;
+    if (r.parts.length) {
+      try { buf = await decodeMono(await new Blob(r.parts, { type: r.parts[0].type || (r.mr && r.mr.mimeType) || "" }).arrayBuffer()); } catch (e) { buf = null; }
+    }
+    // se il file del telefono manca o è molto più corto del previsto, uso la copia diretta
+    const pcmLen = r.pcm.reduce((a, c) => a + c.length, 0);
+    if (pcmLen && (!buf || buf.duration < 0.7 * Math.min(secs, pcmLen / r.pcmRate))) buf = pcmToBuffer(r.pcm, pcmLen, r.pcmRate);
+    busy = false;
+    lockSettings(false);
+    ui.rec.disabled = false; ui.rec.textContent = "Registra";
+    if (!buf || buf.duration < 0.2) { showErr("La registrazione è venuta vuota. Riprova; se succede ancora, scegli un altro microfono."); return; }
+    setTake(buf);
+  }
+
+  ui.rec.addEventListener("click", () => (rec ? stopRec(false) : startRec()));
+
+  // Legge un audio (registrazione o file) e lo porta a un solo canale a 48 kHz
+  function decodeMono(ab) {
+    const oc = new OAC(1, 1, 48000);
+    return new Promise((res, rej) => {
+      const pr = oc.decodeAudioData(ab, res, rej);
+      if (pr && pr.catch) pr.catch(rej);
+    }).then((b) => {
+      if (b.numberOfChannels === 1) return b;
+      const m = oc.createBuffer(1, b.length, b.sampleRate), out = m.getChannelData(0);
+      for (let ch = 0; ch < b.numberOfChannels; ch++) { const d = b.getChannelData(ch); for (let i = 0; i < d.length; i++) out[i] += d[i] / b.numberOfChannels; }
+      return m;
+    });
+  }
+
+  function pcmToBuffer(chunks, len, rate) {
+    const b = new OAC(1, 1, rate).createBuffer(1, len, rate), out = b.getChannelData(0);
+    let o = 0;
+    for (const c of chunks) { out.set(c, o); o += c.length; }
+    return b;
+  }
+
+  function setTake(buf) { takeBuf = buf; renderTake(); }
+
+  function scheduleRender() {
+    if (!takeBuf || rec) return;
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(renderTake, 350);
+  }
+
+  // Applica la voce a tutta la registrazione in un colpo solo, con la stessa catena di effetti del vivo
+  async function renderVoice(buf, p, compat) {
+    const sr = buf.sampleRate, f = FX[p.fx || ""] || {};
+    const oc = new OAC(1, buf.length + Math.round((f.echo ? 2 : 0.3) * sr), sr);
+    const tono = await makeTono(oc, p.pitch, compat);
+    const ch = buildChain(oc, tono, true);
+    ch.apply(p, true);
+    const src = oc.createBufferSource();
+    src.buffer = buf; src.connect(ch.input); src.start(0);
+    const out = await new Promise((res, rej) => {
+      oc.oncomplete = (e) => res(e.renderedBuffer);
+      const pr = oc.startRendering();
+      if (pr && pr.then) pr.then(res, rej);
+      setTimeout(() => rej(new Error("tempo scaduto")), 15000 + buf.duration * 1000);
+    });
+    // volume: picco a -1 dB, senza alzare più di 8 volte
+    const x = out.getChannelData(0);
+    let pk = 0;
+    for (let i = 0; i < x.length; i++) { const v = Math.abs(x[i]); if (v > pk) pk = v; }
+    if (pk > 1e-4) { const g = Math.min(8, 0.89 / pk); for (let i = 0; i < x.length; i++) x[i] *= g; }
+    return { x, sr };
+  }
+
+  async function renderTake() {
+    clearTimeout(renderTimer);
+    if (!takeBuf) return;
+    const id = ++renderId, p = { ...current }, name = p.name.toLowerCase();
+    ui.recInfo.textContent = "Applico la voce " + name + "…";
+    let res = null;
+    try { res = await renderVoice(takeBuf, p, false); }
+    catch (e) { try { res = await renderVoice(takeBuf, p, true); } catch (e2) { res = null; } }
+    if (id !== renderId) return; // nel frattempo è stata scelta un'altra voce
+    if (!res) { ui.recInfo.textContent = "Non sono riuscito ad applicare la voce a questa registrazione."; return; }
+    if (takeUrl) URL.revokeObjectURL(takeUrl);
+    takeBlob = wavBlob(res.x, res.sr);
+    takeUrl = URL.createObjectURL(takeBlob);
+    takeName = p.id;
+    ui.player.src = takeUrl; ui.player.hidden = false; ui.save.hidden = false;
+    ui.recInfo.textContent = "Registrazione di " + fmtTime(takeBuf.duration) + " con la voce " + name + ". Se scegli un'altra voce, la registrazione si aggiorna.";
+  }
+
+  function wavBlob(x, sr) {
+    const n = x.length, b = new ArrayBuffer(44 + n * 2), v = new DataView(b), rate = Math.round(sr);
+    const str = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+    str(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); str(8, "WAVE"); str(12, "fmt "); v.setUint32(16, 16, true);
+    v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+    v.setUint16(32, 2, true); v.setUint16(34, 16, true); str(36, "data"); v.setUint32(40, n * 2, true);
+    for (let i = 0; i < n; i++) { const t = Math.max(-1, Math.min(1, x[i])); v.setInt16(44 + 2 * i, t < 0 ? t * 0x8000 : t * 0x7fff, true); }
+    return new Blob([b], { type: "audio/wav" });
+  }
+
+  // Salva: su iPhone si apre il menu Condividi, da cui si sceglie "Salva in File" o un'app
+  ui.save.addEventListener("click", () => {
+    if (!takeBlob) return;
+    const d = new Date(), two = (k) => String(k).padStart(2, "0");
+    const fname = "cambiavoce-" + takeName + "-" + two(d.getHours()) + two(d.getMinutes()) + two(d.getSeconds()) + ".wav";
+    const download = () => { const a = document.createElement("a"); a.href = takeUrl; a.download = fname; document.body.append(a); a.click(); a.remove(); };
+    let file = null;
+    try { file = new File([takeBlob], fname, { type: "audio/wav" }); } catch (e) { file = null; }
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+      navigator.share({ files: [file] }).catch((e) => { if (!e || e.name !== "AbortError") download(); });
+    } else download();
   });
 
-  // Audio da file: lo fa passare nella stessa catena
+  // Audio da file: stessa strada della registrazione
   ui.file.addEventListener("change", async () => {
-    const f = ui.file.files && ui.file.files[0]; if (!f) return;
-    const c = await ensureCtx();
-    if (c.resume) await c.resume().catch(() => {});
-    try {
-      const buf = await ctx.decodeAudioData(await f.arrayBuffer());
-      if (fileSrc) { try { fileSrc.stop(); } catch (_) {} }
-      fileSrc = ctx.createBufferSource(); fileSrc.buffer = buf; fileSrc.connect(chain.input); fileSrc.start();
-      ui.state.textContent = "Riproduco il file: " + current.name.toLowerCase();
-      fileSrc.onended = () => { if (!micStream) ui.state.textContent = "Spento"; };
-    } catch (e) {
-      ui.err.hidden = false; ui.err.textContent = "Non riesco a leggere questo file audio. Prova con un file m4a, mp3 o wav.";
-    }
+    const f = ui.file.files && ui.file.files[0];
+    if (!f) return;
+    ui.err.hidden = true;
+    ui.recInfo.textContent = "Leggo il file…";
+    try { setTake(await decodeMono(await f.arrayBuffer())); }
+    catch (e) { showErr("Non riesco a leggere questo file audio. Prova con un file m4a, mp3 o wav."); ui.recInfo.textContent = recHint; }
     ui.file.value = "";
   });
 
   syncLabels();
   showDetails();
+  listMics();
 })();
 </script>
 <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});</script>

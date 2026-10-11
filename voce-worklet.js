@@ -9,7 +9,7 @@ const RING = 1 << 15;
 const MASK = RING - 1;
 
 class VoceTono extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
     const sr = sampleRate;
     this.buf = new Float32Array(RING);
@@ -31,13 +31,20 @@ class VoceTono extends AudioWorkletProcessor {
     this.mixStep = 1 / (0.015 * sr);
     this.splices = 0;
 
-    this.port.onmessage = (e) => {
-      const d = e.data || {};
-      if (typeof d.semitones === "number") {
-        this.ratio = Math.pow(2, d.semitones / 12);
-        this.mixTarget = Math.abs(d.semitones) < 0.01 ? 0 : 1;
-      }
-    };
+    this.port.onmessage = (e) => this.setSemitones((e.data || {}).semitones);
+    // Quando la voce si applica a una registrazione il tono arriva subito con le opzioni,
+    // così anche il primo pezzetto è già trasformato
+    const o = options && options.processorOptions;
+    if (o && typeof o.semitones === "number") {
+      this.setSemitones(o.semitones);
+      this.mix = this.mixTarget;
+    }
+  }
+
+  setSemitones(st) {
+    if (typeof st !== "number") return;
+    this.ratio = Math.pow(2, st / 12);
+    this.mixTarget = Math.abs(st) < 0.01 ? 0 : 1;
   }
 
   read(p) {
@@ -170,3 +177,44 @@ class VoceTono extends AudioWorkletProcessor {
 }
 
 registerProcessor("voce-tono", VoceTono);
+
+// Registratore di riserva: copia il microfono così com'è e lo passa alla pagina a pezzi da 4096 campioni.
+// Serve quando il registratore del telefono manca o produce un file che non si riesce a leggere.
+class VoceRegistra extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.on = false;
+    this.chunk = new Float32Array(4096);
+    this.n = 0;
+    this.port.onmessage = (e) => {
+      const cmd = (e.data || {}).cmd;
+      if (cmd === "start") {
+        this.on = true;
+        this.n = 0;
+      } else if (cmd === "stop") {
+        this.on = false;
+        if (this.n) this.port.postMessage({ chunk: this.chunk.slice(0, this.n) });
+        this.n = 0;
+        this.port.postMessage({ done: true });
+      }
+    };
+  }
+
+  process(inputs) {
+    if (this.on) {
+      const x = inputs[0] && inputs[0][0];
+      const len = x ? x.length : 128;
+      for (let i = 0; i < len; i++) {
+        this.chunk[this.n++] = x ? x[i] : 0;
+        if (this.n === this.chunk.length) {
+          this.port.postMessage({ chunk: this.chunk }, [this.chunk.buffer]);
+          this.chunk = new Float32Array(4096);
+          this.n = 0;
+        }
+      }
+    }
+    return true;
+  }
+}
+
+registerProcessor("voce-registra", VoceRegistra);
