@@ -117,6 +117,8 @@ audio { width: 100%; }
     </div>
     <label class="check" for="denoise"><input id="denoise" type="checkbox"> Filtro rumore del telefono
       <span>Utile in posti rumorosi, ma aggiunge ritardo e può tagliare la voce. Usalo solo con le cuffie.</span></label>
+    <label class="check" for="stable"><input id="stable" type="checkbox"> Modalità stabile
+      <span>Se la voce arriva ancora a scatti, attivala: il telefono elabora l'audio a blocchi più grandi, quindi è più stabile ma arriva con un po' più di ritardo.</span></label>
   </section>
 
   <section>
@@ -129,6 +131,8 @@ audio { width: 100%; }
     <p class="small">La registrazione funziona solo con il microfono acceso. Con "Trasforma un audio salvato" scegli una nota vocale dal telefono e la senti con la voce scelta.</p>
     <audio id="player" controls hidden></audio>
   </section>
+
+  <p class="small" id="info">Versione 7</p>
 </div>
 
 <script>
@@ -173,9 +177,11 @@ audio { width: 100%; }
   const $ = (id) => document.getElementById(id);
   const ui = { mic: $("mic"), state: $("state"), level: $("level"), lat: $("lat"), err: $("micErr"),
     pitch: $("pitch"), pitchOut: $("pitchOut"), bright: $("bright"), brightOut: $("brightOut"),
-    vol: $("vol"), volOut: $("volOut"), denoise: $("denoise"), rec: $("rec"), file: $("file"), player: $("player") };
+    vol: $("vol"), volOut: $("volOut"), denoise: $("denoise"), stable: $("stable"), info: $("info"), rec: $("rec"), file: $("file"), player: $("player") };
 
+  const VERSION = 7;
   let ctx = null, chain = null, micStream = null, micSrc = null, fileSrc = null, recorder = null, current = PRESETS[0];
+  let ctxReady = null, meterOn = false, starting = false, micRate = 0;
 
   /* Pitch shifter a linee di ritardo modulate (tecnica "Jungle" di Chris Wilson):
      due ritardi che scorrono a rampa, sfumati tra loro. Usa solo nodi nativi, quindi gira ovunque. */
@@ -231,9 +237,24 @@ audio { width: 100%; }
     return a;
   }
 
-  function buildChain(c) {
+  // Cambio di tono principale: gira nel file voce-worklet.js e allinea le giunte alla forma d'onda.
+  // Se il browser non lo supporta resta il metodo vecchio a linee di ritardo.
+  async function makeTono(c) {
+    try {
+      if (!c.audioWorklet || typeof AudioWorkletNode === "undefined") throw new Error("AudioWorklet assente");
+      await c.audioWorklet.addModule("voce-worklet.js");
+      const node = new AudioWorkletNode(c, "voce-tono", {
+        numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1], channelCount: 1, channelCountMode: "explicit",
+      });
+      return { input: node, output: node, kind: "fluido", setSemitones: (st) => node.port.postMessage({ semitones: st }), delayMs: (st) => (st ? 11 : 0) };
+    } catch (e) {
+      const s = makeShifter(c);
+      return { input: s.input, output: s.output, kind: "compatibile", setSemitones: s.setSemitones, delayMs: (st) => (st ? 35 : 0) };
+    }
+  }
+
+  function buildChain(c, shifter) {
     const input = c.createGain();
-    const shifter = makeShifter(c);
     const hp = c.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 70;
     const low = c.createBiquadFilter(); low.type = "lowshelf"; low.frequency.value = 220;
     const high = c.createBiquadFilter(); high.type = "highshelf"; high.frequency.value = 2800;
@@ -257,7 +278,7 @@ audio { width: 100%; }
     input.connect(analyser);
     const lp = c.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 18000;
     // Vibrato: un piccolo ritardo che oscilla fa ondeggiare l'intonazione (voci anziane)
-    const vib = c.createDelay(0.05); vib.delayTime.value = 0.006;
+    const vib = c.createDelay(0.05); vib.delayTime.value = 0;
     const vibLfo = c.createOscillator(); vibLfo.frequency.value = 5.5; const vibAmt = c.createGain(); vibAmt.gain.value = 0;
     vibLfo.connect(vibAmt); vibAmt.connect(vib.delayTime); vibLfo.start();
     input.connect(shifter.input); shifter.output.connect(vib); vib.connect(hp); hp.connect(low); low.connect(high); high.connect(lp);
@@ -316,36 +337,55 @@ audio { width: 100%; }
       const [eTime, eFb, eOut] = f.echo || [0.32, 0, 0];
       set(echo.delayTime, eTime); set(echoFb.gain, eFb); set(echoOut.gain, eOut);
       const [vHz, vDepth] = f.vib || [5.5, 0];
-      set(vibLfo.frequency, vHz); set(vibAmt.gain, vDepth);
+      set(vibLfo.frequency, vHz); set(vibAmt.gain, vDepth); set(vib.delayTime, vDepth ? 0.006 : 0);
       const [tHz, tDepth] = f.trem || [5, 0];
       set(tremLfo.frequency, tHz); set(tremAmt.gain, tDepth); set(trem.gain, 1 - tDepth);
     }
-    return { input, vol, analyser, tap, apply };
+    return { input, vol, analyser, tap, apply, tono: shifter };
   }
 
   function ensureCtx() {
-    if (ctx) return ctx;
+    if (ctxReady) return ctxReady;
     const AC = window.AudioContext || window.webkitAudioContext;
-    ctx = new AC({ latencyHint: "interactive" });
-    chain = buildChain(ctx);
-    chain.apply(current);
-    setVol();
-    meterLoop();
-    return ctx;
+    const c = new AC({ latencyHint: ui.stable.checked ? 0.08 : "interactive" });
+    ctx = c;
+    if (c.resume) c.resume().catch(() => {}); // subito, dentro il tocco: su iPhone serve
+    ctxReady = makeTono(c).then((tono) => {
+      if (c !== ctx) return c; // nel frattempo il contesto è stato sostituito
+      chain = buildChain(c, tono);
+      chain.apply(current);
+      setVol();
+      if (!meterOn) { meterOn = true; meterLoop(); }
+      showDetails();
+      return c;
+    });
+    return ctxReady;
+  }
+
+  function showDetails() {
+    const parts = ["Versione " + VERSION];
+    if (chain) parts.push("cambio di tono " + chain.tono.kind);
+    if (ctx) parts.push("audio " + (ctx.sampleRate / 1000).toFixed(1) + " kHz");
+    if (micRate) parts.push("microfono " + (micRate / 1000).toFixed(1) + " kHz");
+    if (ui.stable.checked) parts.push("modalità stabile");
+    ui.info.textContent = parts.join(" · ");
   }
 
   function meterLoop() {
-    const data = new Uint8Array(chain.analyser.fftSize);
-    let quietSince = 0;
+    const data = new Uint8Array(512);
+    let quietSince = 0, floor = 3;
     const tick = () => {
+      requestAnimationFrame(tick);
+      if (!chain) return;
       chain.analyser.getByteTimeDomainData(data);
       let peak = 0; for (const v of data) peak = Math.max(peak, Math.abs(v - 128));
       ui.level.style.width = Math.min(100, (peak / 128) * 160) + "%";
-      // Dopo almeno mezzo secondo di silenzio, e non più di una volta ogni 8 secondi, azzera la coda del microfono
+      // Rumore di fondo stimato: scende subito, sale piano. Dopo un secondo intero sotto quel livello,
+      // e non più di una volta ogni 20 secondi, svuoto la coda del microfono.
+      floor = peak < floor ? peak : floor + 0.002 * (peak - floor);
       const now = performance.now();
-      if (peak > 6) quietSince = 0; else if (!quietSince) quietSince = now;
-      if (micStream && quietSince && now - quietSince > 500 && now - lastAttach > 8000) attachMic();
-      requestAnimationFrame(tick);
+      if (peak > Math.max(2, floor * 2.5)) quietSince = 0; else if (!quietSince) quietSince = now;
+      if (micStream && quietSince && now - quietSince > 1000 && now - lastAttach > 20000) attachMic();
     };
     tick();
   }
@@ -353,32 +393,43 @@ audio { width: 100%; }
   function showLatency() {
     if (!ctx) return;
     const ms = ((ctx.baseLatency || 0) + (ctx.outputLatency || 0)) * 1000;
-    const shift = Number(ui.pitch.value) !== 0 ? 35 : 0; // il pitch shifter aggiunge circa 35 ms
+    const shift = chain ? chain.tono.delayMs(Number(ui.pitch.value)) : 0; // ritardo medio del cambio di tono
     ui.lat.textContent = ms > 0 ? `ritardo stimato: ~${Math.round(ms + shift)} ms` : "ritardo stimato: non disponibile su questo browser";
   }
 
   async function micOn() {
+    if (starting) return;
+    starting = true;
     ui.err.hidden = true;
-    ensureCtx();
-    await ctx.resume();
+    const ready = ensureCtx();
+    let stream;
     try {
       // Cancellazione dell'eco e riduzione del rumore del telefono scambiano la voce trasformata per un'eco
       // e la tagliano dopo la prima parola; inoltre aggiungono ritardo. Restano spente se non le chiedi.
       const clean = ui.denoise.checked;
-      micStream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: clean, noiseSuppression: clean, autoGainControl: false, latency: 0, channelCount: 1 },
       });
     } catch (e) {
+      starting = false;
       ui.err.hidden = false;
       ui.err.textContent = "Il microfono non è disponibile in questa pagina (" + (e && e.name ? e.name : "errore") +
         "). Se la stai aprendo dentro Claude, il microfono è bloccato: apri la versione scaricabile dal browser del telefono. Nel frattempo puoi usare \"Trasforma un audio salvato\".";
       return;
     }
+    await ready;
+    if (ctx.resume) await ctx.resume().catch(() => {});
+    micStream = stream;
+    starting = false;
+    const track = stream.getAudioTracks()[0];
+    const set = track && track.getSettings ? track.getSettings() : {};
+    micRate = set.sampleRate || 0;
     attachMic();
     ui.mic.classList.add("on"); ui.mic.textContent = "Spegni"; ui.mic.setAttribute("aria-pressed", "true");
     ui.state.textContent = "In ascolto: " + current.name.toLowerCase();
     ui.rec.disabled = false;
     showLatency();
+    showDetails();
   }
 
   // Ricollega il microfono con un buffer vuoto. Alcuni telefoni lasciano crescere piano piano
@@ -402,6 +453,16 @@ audio { width: 100%; }
   }
 
   ui.mic.addEventListener("click", () => (micStream ? micOff() : micOn()));
+  try { ui.stable.checked = localStorage.getItem("cambiavoce-stabile") === "1"; } catch (_) {}
+  ui.stable.addEventListener("change", () => {
+    try { localStorage.setItem("cambiavoce-stabile", ui.stable.checked ? "1" : "0"); } catch (_) {}
+    // la dimensione dei blocchi si sceglie solo creando l'audio da capo
+    const wasOn = !!micStream;
+    if (wasOn) micOff();
+    if (fileSrc) { try { fileSrc.stop(); } catch (_) {} fileSrc = null; }
+    if (ctx) { const old = ctx; ctx = null; chain = null; ctxReady = null; if (old.close) old.close().catch(() => {}); }
+    if (wasOn) micOn(); else showDetails();
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && ctx && micStream) { ctx.resume(); attachMic(); }
   });
@@ -463,7 +524,8 @@ audio { width: 100%; }
   // Audio da file: lo fa passare nella stessa catena
   ui.file.addEventListener("change", async () => {
     const f = ui.file.files && ui.file.files[0]; if (!f) return;
-    ensureCtx(); await ctx.resume();
+    const c = await ensureCtx();
+    if (c.resume) await c.resume().catch(() => {});
     try {
       const buf = await ctx.decodeAudioData(await f.arrayBuffer());
       if (fileSrc) { try { fileSrc.stop(); } catch (_) {} }
@@ -477,6 +539,7 @@ audio { width: 100%; }
   });
 
   syncLabels();
+  showDetails();
 })();
 </script>
 <script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});</script>
