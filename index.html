@@ -85,7 +85,7 @@ audio { width: 100%; }
     <p class="sub">Parla nel microfono e senti la tua voce trasformata mentre parli.</p>
   </header>
 
-  <p class="note" id="phones">Usa le cuffie, meglio se col filo: senza, il telefono riprende la voce trasformata e parte il fischio. Le cuffie Bluetooth funzionano ma aggiungono un ritardo che l'app non può togliere.</p>
+  <p class="note" id="phones">Usa le cuffie, meglio se col filo: senza, il telefono riprende la voce trasformata e parte il fischio. Con le cuffie Bluetooth, appena accendi il microfono l'iPhone le mette in modalità chiamata: il suono peggiora e arriva in ritardo, e l'app non può evitarlo.</p>
   <p class="note" id="micErr" hidden></p>
 
   <div class="stage">
@@ -179,9 +179,9 @@ audio { width: 100%; }
     pitch: $("pitch"), pitchOut: $("pitchOut"), bright: $("bright"), brightOut: $("brightOut"),
     vol: $("vol"), volOut: $("volOut"), denoise: $("denoise"), stable: $("stable"), info: $("info"), rec: $("rec"), file: $("file"), player: $("player") };
 
-  const VERSION = 7;
+  const VERSION = 8;
   let ctx = null, chain = null, micStream = null, micSrc = null, fileSrc = null, recorder = null, current = PRESETS[0];
-  let ctxReady = null, meterOn = false, starting = false, micRate = 0;
+  let ctxReady = null, meterOn = false, starting = false, micRate = 0, rateMatched = false;
 
   /* Pitch shifter a linee di ritardo modulate (tecnica "Jungle" di Chris Wilson):
      due ritardi che scorrono a rampa, sfumati tra loro. Usa solo nodi nativi, quindi gira ovunque. */
@@ -362,10 +362,28 @@ audio { width: 100%; }
     return ctxReady;
   }
 
+  async function matchRate(rate) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    let c2;
+    try { c2 = new AC({ latencyHint: ui.stable.checked ? 0.08 : "interactive", sampleRate: rate }); } catch (e) { return; }
+    // fuori dal tocco l'iPhone può non far partire l'audio: aspetto al massimo mezzo secondo, poi tengo quello vecchio
+    try { await Promise.race([c2.resume(), new Promise((r) => setTimeout(r, 500))]); } catch (e) { /* resta quello vecchio */ }
+    if (c2.state !== "running" || Math.abs(c2.sampleRate - rate) > 1) { if (c2.close) c2.close().catch(() => {}); return; }
+    const tono = await makeTono(c2);
+    const old = ctx;
+    ctx = c2;
+    chain = buildChain(c2, tono);
+    chain.apply(current);
+    setVol();
+    ctxReady = Promise.resolve(c2);
+    rateMatched = true;
+    if (old && old.close) old.close().catch(() => {});
+  }
+
   function showDetails() {
     const parts = ["Versione " + VERSION];
     if (chain) parts.push("cambio di tono " + chain.tono.kind);
-    if (ctx) parts.push("audio " + (ctx.sampleRate / 1000).toFixed(1) + " kHz");
+    if (ctx) parts.push("audio " + (ctx.sampleRate / 1000).toFixed(1) + " kHz" + (rateMatched ? " (adattato al microfono)" : ""));
     if (micRate) parts.push("microfono " + (micRate / 1000).toFixed(1) + " kHz");
     if (ui.stable.checked) parts.push("modalità stabile");
     ui.info.textContent = parts.join(" · ");
@@ -424,6 +442,9 @@ audio { width: 100%; }
     const track = stream.getAudioTracks()[0];
     const set = track && track.getSettings ? track.getSettings() : {};
     micRate = set.sampleRate || 0;
+    // Con le cuffie Bluetooth l'iPhone passa in modalità chiamata e il microfono lavora a 16 kHz o meno,
+    // mentre l'audio dell'app era partito a 44,1 o 48 kHz. Provo a rifare l'audio alla frequenza del microfono.
+    if (micRate && Math.abs(micRate - ctx.sampleRate) > 1) await matchRate(micRate);
     attachMic();
     ui.mic.classList.add("on"); ui.mic.textContent = "Spegni"; ui.mic.setAttribute("aria-pressed", "true");
     ui.state.textContent = "In ascolto: " + current.name.toLowerCase();
@@ -460,7 +481,7 @@ audio { width: 100%; }
     const wasOn = !!micStream;
     if (wasOn) micOff();
     if (fileSrc) { try { fileSrc.stop(); } catch (_) {} fileSrc = null; }
-    if (ctx) { const old = ctx; ctx = null; chain = null; ctxReady = null; if (old.close) old.close().catch(() => {}); }
+    if (ctx) { const old = ctx; ctx = null; chain = null; ctxReady = null; rateMatched = false; if (old.close) old.close().catch(() => {}); }
     if (wasOn) micOn(); else showDetails();
   });
   document.addEventListener("visibilitychange", () => {

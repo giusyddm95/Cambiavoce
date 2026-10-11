@@ -1,5 +1,5 @@
 // Salva l'app sul telefono così si apre anche senza connessione
-const CACHE = "cambiavoce-v7";
+const CACHE = "cambiavoce-v8";
 const FILES = ["./", "index.html", "voce-worklet.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: "reload" })))));
